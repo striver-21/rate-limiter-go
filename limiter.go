@@ -91,11 +91,11 @@ func (rl *RateLimiter) Reset(ctx context.Context, identifier string) error {
 
 // Stats returns rate limit statistics for an identifier
 type Stats struct {
-	CurrentLoad   int64
-	MaxRequests   int64
-	WindowSize    time.Duration
+	CurrentLoad    int64
+	MaxRequests    int64
+	WindowSize     time.Duration
 	AvailableSlots int64
-	UsagePercent  float64
+	UsagePercent   float64
 }
 
 // GetStats returns current statistics for an identifier
@@ -109,10 +109,10 @@ func (rl *RateLimiter) GetStats(ctx context.Context, identifier string) (Stats, 
 	usagePercent := (float64(currentLoad) / float64(rl.maxRequests)) * 100
 
 	return Stats{
-		CurrentLoad:   currentLoad,
-		MaxRequests:   rl.maxRequests,
-		WindowSize:    rl.windowSize,
+		CurrentLoad:    currentLoad,
+		MaxRequests:    rl.maxRequests,
+		WindowSize:     rl.windowSize,
 		AvailableSlots: availableSlots,
-		UsagePercent:  usagePercent,
+		UsagePercent:   usagePercent,
 	}, nil
 }
