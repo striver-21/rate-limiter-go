@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,7 +19,7 @@ func main() {
 	defer redisClient.Close()
 
 	// Test Redis connection
-	ctx := redisClient.Context()
+	ctx := context.Background()
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
@@ -84,8 +85,8 @@ func handleGetData(c *gin.Context) {
 	time.Sleep(10 * time.Millisecond)
 
 	c.JSON(http.StatusOK, gin.H{
-		"data":   "Sample data from protected endpoint",
-		"status": "success",
+		"data":      "Sample data from protected endpoint",
+		"status":    "success",
 		"timestamp": time.Now(),
 	})
 }
@@ -106,8 +107,8 @@ func handlePostData(c *gin.Context) {
 func handleGetUser(c *gin.Context) {
 	id := c.Param("id")
 	c.JSON(http.StatusOK, gin.H{
-		"id":   id,
-		"name": "User " + id,
+		"id":         id,
+		"name":       "User " + id,
 		"created_at": time.Now(),
 	})
 }
