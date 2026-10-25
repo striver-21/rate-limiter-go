@@ -1,191 +1,172 @@
-# Distributed Rate Limiter
+# rate-limiter-go
 
-A high-performance sliding-window rate limiter built in Go with Redis backend and Gin middleware integration. Engineered to protect backend APIs from traffic surges with minimal overhead.
+[![ci](https://github.com/striver-21/rate-limiter-go/actions/workflows/ci.yml/badge.svg)](https://github.com/striver-21/rate-limiter-go/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/striver-21/rate-limiter-go.svg)](https://pkg.go.dev/github.com/striver-21/rate-limiter-go)
 
-## Features
+A sliding-window-log rate limiter for Go services, with a Redis backend for
+fleets that share one limit and an in-memory backend for single instances
+and tests. Ships as `net/http` middleware with a Gin adapter, and sets the
+IETF draft `RateLimit-*` headers.
 
-- **Sliding Window Algorithm**: Precise rate limiting with sub-millisecond precision
-- **5k+ RPS Handling**: Supports 5,000+ requests per second with sub-millisecond overhead
-- **Distributed Architecture**: Scales horizontally across multiple instances via Redis
-- **Middleware Integration**: Drop-in Gin middleware for easy API protection
-- **HTTP Headers**: Standard RateLimit headers for client awareness
-- **Atomic Operations**: Lua scripting ensures no race conditions
-
-## Performance
-
-- **Throughput**: 5,000+ requests per second
-- **Latency**: < 1ms overhead per request
-- **Accuracy**: Sliding window provides precise limit enforcement
-- **Scalability**: Horizontal scaling via Redis
-
-## Quick Start
-
-### Prerequisites
-- Go 1.21+
-- Redis 7.0+
-
-### Setup
+**Live demo** (1 OCPU Oracle Cloud VM, Redis backend, 100 req/min per IP):
 
 ```bash
-# Prerequisites: Start Redis
-redis-server
-
-# Install dependencies
-go mod download
-
-# Run server
-go run main.go limiter.go middleware.go
+curl -i http://137.23.51.193/ratelimiter/api/data
 ```
 
-Server starts on `http://localhost:8080`
+## Why a sliding window log
+
+| Algorithm | Burst at window edge | Memory per key | Exactness |
+|---|---|---|---|
+| Fixed window counter | up to 2× limit | O(1) | approximate |
+| Sliding window counter | small | O(1) | approximate |
+| **Sliding window log** (this) | none | O(limit) | exact |
+| Token bucket / GCRA | configurable | O(1) | exact for its own model |
+
+The log is exact and easy to reason about; its cost is one sorted-set entry
+per request, which is fine for per-user/per-IP limits in the hundreds or
+thousands per window. For limits in the millions per window, use a counter
+or GCRA instead — that trade-off is the point of the interface.
+
+## How the Redis backend works
+
+One Lua script, one round trip, atomic per key:
+
+```
+ZREMRANGEBYSCORE key -inf (now - window)   -- drop expired entries
+count = ZCARD key
+if count < limit: ZADD key now <unique-member>; count++
+PEXPIRE key window + 1s                    -- let idle keys disappear
+reset = oldest score + window - now        -- when the next slot frees up
+return {allowed, count, reset}
+```
+
+Scores are microseconds. The member is `timestamp-random64`, so two requests
+in the same microsecond can't overwrite each other (the original version used
+Lua's `math.random`, which is deterministically seeded on older Redis).
+
+```
+          ┌─────────────┐   Allow(ctx,key)   ┌──────────────────┐
+request ─▶│ httpmw.Limit│───────────────────▶│ ratelimit.Limiter│
+          │  (headers,  │◀───────────────────│  Redis | Memory  │
+          │ 429/503)    │  Result{Allowed,   └──────────────────┘
+          └─────────────┘   Remaining,Reset}
+```
 
 ## Usage
 
-### Basic Integration
-
 ```go
-limiter := NewRateLimiter(redisClient, time.Second, 5000)
-
-router := gin.Default()
-router.Use(Middleware(limiter))
-
-router.GET("/api/data", handler)
-```
-
-### Configuration
-
-```go
-// Create limiter: 1000 requests per minute (window size = 1 minute)
-limiter := NewRateLimiter(
-    redisClient,
-    time.Minute,      // window size
-    1000,             // max requests per window
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/striver-21/rate-limiter-go/httpmw"
+    "github.com/striver-21/rate-limiter-go/ratelimit"
 )
+
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+limiter, err := ratelimit.NewRedis(rdb, ratelimit.Config{Limit: 100, Window: time.Minute})
+
+// net/http
+mux := http.NewServeMux()
+mux.Handle("/api/", httpmw.Limit(limiter, httpmw.Options{
+    Key:      httpmw.TrustedProxy("X-Forwarded-For", "10.0.0.0/8"), // or httpmw.ClientIP
+    FailOpen: false, // 503 when Redis is unreachable; true lets traffic through
+})(apiHandler))
+
+// Gin
+r.Use(ginmw.Limit(limiter, httpmw.Options{}))
+
+// anywhere else
+res, err := limiter.Allow(ctx, "apikey:"+key)
+if !res.Allowed { /* res.RetryAfter */ }
 ```
 
-### Checking Rate Limit Status
+Response headers on every limited route:
 
-```go
-stats, _ := limiter.GetStats(ctx, "user_123")
-fmt.Printf("Usage: %d/%d (%.1f%%)\n", 
-    stats.CurrentLoad, 
-    stats.MaxRequests, 
-    stats.UsagePercent)
+```
+RateLimit-Limit: 100
+RateLimit-Remaining: 97
+RateLimit-Reset: 42          # seconds until the oldest request leaves the window
+Retry-After: 42              # only on 429
 ```
 
-### Resetting Rate Limits
+### Key selection and proxies
 
-```go
-limiter.Reset(ctx, "user_123")
-```
+`httpmw.ClientIP` uses the TCP peer address and ignores `X-Forwarded-For`.
+Behind a load balancer use `httpmw.TrustedProxy(header, cidrs...)`, which
+honours the header only when the direct peer is in a trusted CIDR — otherwise
+clients could pick their own bucket.
 
-## API Endpoints
+### Failure mode
 
-### Health Check
-```bash
-curl -X GET http://localhost:8080/health
-```
+Redis down ⇒ `Allow` returns an error. The middleware then returns **503**
+(default) or passes the request through when `FailOpen: true`. Choose
+deliberately: fail-closed protects the upstream, fail-open protects
+availability.
 
-### Rate Limit Stats
-```bash
-curl -X GET http://localhost:8080/rate-limit/stats
-```
-
-Response:
-```json
-{
-  "identifier": "127.0.0.1",
-  "current_load": 125,
-  "max_requests": 5000,
-  "available_slots": 4875,
-  "usage_percent": "2.50%",
-  "window_size": "1s"
-}
-```
-
-### Reset Rate Limit
-```bash
-curl -X POST http://localhost:8080/rate-limit/reset?identifier=user_123
-```
-
-### Protected Endpoints
-
-All requests to `/api/*` are rate-limited:
+## Demo server
 
 ```bash
-curl -X GET http://localhost:8080/api/data
-curl -X POST http://localhost:8080/api/data
-curl -X GET http://localhost:8080/api/users/123
+docker compose up --build          # Redis + server on :8080
+# or, in-memory, no Redis:
+go run ./cmd/server
 ```
 
-## Rate Limit Headers
+| Env | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | listen port |
+| `REDIS_ADDR` | *(empty = in-memory)* | `host:port` of Redis |
+| `RATE_LIMIT` | `100` | requests per window |
+| `RATE_WINDOW` | `1m` | window (`1s`, `30s`, `1m`, …) |
+| `FAIL_OPEN` | `false` | allow traffic when Redis errors |
+| `TRUSTED_PROXIES` | *(none)* | CIDRs whose `X-Forwarded-For` is trusted |
+| `ADMIN_TOKEN` | *(unset = disabled)* | enables `POST /admin/reset?key=…` with `Authorization: Bearer` |
 
-Every request includes:
-```
-X-RateLimit-Limit: 5000
-X-RateLimit-Remaining: 4875
-X-RateLimit-Used: 125
-```
+Routes: `GET /health`, `GET /api/data`, `GET /api/users/:id` (limited),
+`POST /admin/reset` (only with `ADMIN_TOKEN`). Structured JSON logs via
+`log/slog`; graceful shutdown on SIGINT/SIGTERM.
 
-When rate limited (429):
-```
-Retry-After: 1
-```
+## Tests and benchmarks
 
-## Implementation Details
-
-### Sliding Window Algorithm
-
-- Uses Redis sorted sets to maintain request timestamps
-- O(log n) insertion and cleanup
-- Automatic expiry of old entries
-- Lua script ensures atomic operations
-
-### Redis Keys
-
-```
-rate_limit:{identifier}
-  → Sorted set: {timestamp: request_id}
-  → TTL: 1 hour (auto-cleanup)
+```bash
+go test -race ./...
+go test -bench . -benchmem ./ratelimit/
 ```
 
-### Thread Safety
+Tests cover: allow-then-deny at the limit, the window actually sliding (a
+slot frees exactly `window` after its request, not at a bucket boundary),
+key isolation, 20 goroutines × 25 calls never exceeding the limit, Redis
+unavailable, key TTL, header values, trusted-proxy spoofing, fail-open vs
+fail-closed. The Redis implementation is tested against
+[miniredis](https://github.com/alicebob/miniredis) so CI needs no Redis.
 
-- Lua scripting prevents race conditions
-- Support for concurrent requests
-- Safe for horizontal deployment
+Measured on this laptop (i5-8250U, Go 1.26, `go test -bench`):
 
-## Benchmarks
+| Benchmark | ns/op | allocs/op |
+|---|---|---|
+| `MemoryAllow` (single goroutine) | 90 | 0 |
+| `MemoryAllowParallel` (8 goroutines, 64 keys) | 226 | 0 |
 
-*On a 2-core machine with Redis locally:*
-- 5,000 req/sec sustained
-- < 1ms p99 latency overhead
-- < 500μs p50 latency overhead
+The in-process Redis benchmark against miniredis is **not** reported as a
+throughput figure: miniredis interprets Lua in Go and is far slower than a
+real Redis, so the number measures the test double, not the limiter. Real
+Redis adds one network round trip per request (typically 0.2–1 ms on the same
+host or VPC); the limiter does no other I/O.
 
-## Configuration Options
+## Layout
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| Window Size | 1s | Duration of the rate limit window |
-| Max Requests | 5000 | Maximum requests in window |
-| Redis Addr | localhost:6379 | Redis connection address |
-
-## Common Patterns
-
-### Per-User Rate Limiting
-```go
-middleware := Middleware(limiter)
-// Automatically uses user_id if set in context
-c.Set("user_id", userId)
+```
+ratelimit/   Limiter interface, Redis and in-memory implementations, tests, benchmarks
+httpmw/      net/http middleware, RateLimit headers, key functions
+ginmw/       Gin adapter
+cmd/server/  demo API (the live demo above)
 ```
 
-### Per-IP Rate Limiting
-```go
-// Default behavior, uses client IP
-```
+## Not implemented (yet)
 
-### Custom Identifier
-```go
-identifier := "api_key_" + apiKey
-allowed, _ := limiter.Allow(ctx, identifier)
-```
+- Sliding-window **counter** / GCRA backends for very high limits
+- Per-route limits in the demo server (the package supports it; the demo uses one)
+- Redis Cluster hash-tagging helpers (works with cluster clients as long as the key lands on one slot)
+
+## License
+
+MIT
