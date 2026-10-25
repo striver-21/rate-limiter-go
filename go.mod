@@ -2,6 +2,8 @@ module github.com/striver-21/rate-limiter-go
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/gin-gonic/gin v1.12.0
