@@ -1,6 +1,7 @@
 package ginmw
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,7 +28,7 @@ func TestGinMiddlewareLimitsAndAborts(t *testing.T) {
 
 	do := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/x", nil)
 		req.RemoteAddr = "192.0.2.1:1234"
 		r.ServeHTTP(rec, req)
 		return rec

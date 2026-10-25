@@ -119,22 +119,21 @@ func TestWindowSlides(t *testing.T) {
 		t.Run(im.name, func(t *testing.T) {
 			clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 			l, _ := im.build(t, Config{Limit: 2, Window: time.Second}, clk)
-			ctx := context.Background()
 
-			mustAllow(t, l, ctx, "k") // t=0
+			mustAllow(t, l, "k") // t=0
 			clk.advance(600 * time.Millisecond)
-			mustAllow(t, l, ctx, "k") // t=0.6
-			mustDeny(t, l, ctx, "k")  // 2 in window
+			mustAllow(t, l, "k") // t=0.6
+			mustDeny(t, l, "k")  // 2 in window
 
 			clk.advance(450 * time.Millisecond) // t=1.05: the t=0 entry has expired
-			res := mustAllow(t, l, ctx, "k")
+			res := mustAllow(t, l, "k")
 			if res.Remaining != 0 {
 				t.Errorf("Remaining = %d, want 0 (entries at 0.6 and 1.05)", res.Remaining)
 			}
-			mustDeny(t, l, ctx, "k") // t=0.6 entry still inside the window
+			mustDeny(t, l, "k") // t=0.6 entry still inside the window
 
 			clk.advance(600 * time.Millisecond) // t=1.65: only the 1.05 entry remains
-			mustAllow(t, l, ctx, "k")
+			mustAllow(t, l, "k")
 		})
 	}
 }
@@ -144,10 +143,9 @@ func TestKeysAreIndependent(t *testing.T) {
 		t.Run(im.name, func(t *testing.T) {
 			clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 			l, _ := im.build(t, Config{Limit: 1, Window: time.Second}, clk)
-			ctx := context.Background()
-			mustAllow(t, l, ctx, "a")
-			mustDeny(t, l, ctx, "a")
-			mustAllow(t, l, ctx, "b")
+			mustAllow(t, l, "a")
+			mustDeny(t, l, "a")
+			mustAllow(t, l, "b")
 		})
 	}
 }
@@ -199,14 +197,15 @@ func TestRedisKeyExpires(t *testing.T) {
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	im := impls()[1]
 	l, mr := im.build(t, Config{Limit: 1, Window: time.Second, KeyPrefix: "rl:"}, clk)
-	mustAllow(t, l, context.Background(), "k")
+	mustAllow(t, l, "k")
 	ttl := mr.TTL("rl:k")
 	if ttl <= time.Second || ttl > 3*time.Second {
 		t.Fatalf("TTL = %v, want window + ~1s", ttl)
 	}
 }
 
-func mustAllow(t *testing.T, l Limiter, ctx context.Context, key string) Result {
+func mustAllow(t *testing.T, l Limiter, key string) Result {
+	ctx := context.Background()
 	t.Helper()
 	res, err := l.Allow(ctx, key)
 	if err != nil {
@@ -218,7 +217,8 @@ func mustAllow(t *testing.T, l Limiter, ctx context.Context, key string) Result 
 	return res
 }
 
-func mustDeny(t *testing.T, l Limiter, ctx context.Context, key string) Result {
+func mustDeny(t *testing.T, l Limiter, key string) Result {
+	ctx := context.Background()
 	t.Helper()
 	res, err := l.Allow(ctx, key)
 	if err != nil {
@@ -269,7 +269,7 @@ func BenchmarkMemoryAllowParallel(b *testing.B) {
 func BenchmarkRedisAllow(b *testing.B) {
 	mr := miniredis.RunT(b)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	l, err := NewRedis(rdb, Config{Limit: 1_000_000, Window: time.Second})
 	if err != nil {
 		b.Fatal(err)

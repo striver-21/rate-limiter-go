@@ -24,7 +24,7 @@ func TestLimitSetsHeadersAndDenies(t *testing.T) {
 
 	for i, wantStatus := range []int{200, 200, 429} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.RemoteAddr = "203.0.113.5:4321"
 		h.ServeHTTP(rec, req)
 		if rec.Code != wantStatus {
@@ -36,7 +36,7 @@ func TestLimitSetsHeadersAndDenies(t *testing.T) {
 	}
 	// last response was denied
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "203.0.113.5:4321"
 	h.ServeHTTP(rec, req)
 	if rec.Header().Get("Retry-After") == "" {
@@ -52,7 +52,7 @@ func TestDifferentIPsDifferentBuckets(t *testing.T) {
 	h := Limit(l, Options{})(okHandler())
 	for _, addr := range []string{"10.0.0.1:1", "10.0.0.2:1"} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.RemoteAddr = addr
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -64,7 +64,7 @@ func TestDifferentIPsDifferentBuckets(t *testing.T) {
 func TestTrustedProxyOnlyHonoursHeaderFromTrustedPeer(t *testing.T) {
 	key := TrustedProxy("X-Forwarded-For", "127.0.0.0/8")
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:9000"
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 10.1.1.1")
 	if got := key(req); got != "198.51.100.7" {
@@ -90,7 +90,7 @@ func TestBackendErrorFailClosedAndOpen(t *testing.T) {
 	}{{false, http.StatusServiceUnavailable}, {true, http.StatusOK}} {
 		h := Limit(failingLimiter{}, Options{FailOpen: tc.failOpen})(okHandler())
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 		if rec.Code != tc.want {
 			t.Errorf("FailOpen=%v: status %d, want %d", tc.failOpen, rec.Code, tc.want)
 		}
@@ -102,7 +102,7 @@ func TestEmptyKeySkipsLimiting(t *testing.T) {
 	h := Limit(l, Options{Key: func(*http.Request) string { return "" }})(okHandler())
 	for range 5 {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status %d, want 200", rec.Code)
 		}

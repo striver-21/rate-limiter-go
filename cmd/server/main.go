@@ -56,7 +56,7 @@ func run() error {
 		return err
 	}
 	if rdb != nil {
-		defer rdb.Close()
+		defer func() { _ = rdb.Close() }()
 	}
 
 	gin.SetMode(gin.ReleaseMode)
