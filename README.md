@@ -148,9 +148,25 @@ Measured on this laptop (i5-8250U, Go 1.26, `go test -bench`):
 
 The in-process Redis benchmark against miniredis is **not** reported as a
 throughput figure: miniredis interprets Lua in Go and is far slower than a
-real Redis, so the number measures the test double, not the limiter. Real
-Redis adds one network round trip per request (typically 0.2–1 ms on the same
-host or VPC); the limiter does no other I/O.
+real Redis, so the number measures the test double, not the limiter.
+
+### Load test against real Redis
+
+Run on the live-demo VM itself (Oracle Cloud `VM.Standard.E2.1.Micro`:
+**1 OCPU, 1 GB RAM**, Redis 7 and the server as containers on the same host,
+`hey -z 30s -c 50`, one client key, limit 100/min):
+
+```
+Requests/sec:  1021
+Latency:       p50 18 ms · p90 94 ms · p99 110 ms · max 282 ms
+Responses:     [200] 100   [429] 30719
+```
+
+Two things worth reading off that: the limiter allowed **exactly 100**
+requests in the window under 50 concurrent connections (the atomic Lua
+script doing its job), and ~1k req/s is the ceiling of a shared 1-vCPU box
+running the load generator, Redis and the server together — not of the
+limiter. On real hardware the cost per request is one Redis round trip.
 
 ## Layout
 
